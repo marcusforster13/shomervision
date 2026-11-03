@@ -45,26 +45,101 @@ export async function buildRig() {
   const tq = new THREE.Quaternion();
   const Z = new V3(0, 0, 1);
 
-  // as hélices: os ossos de hélice do esqueleto do drone, e um disco translúcido em cada rotor quando giram
-  const props = [];
-  drone.traverse((o) => o.isBone && /propel/i.test(o.name) && props.push({b: o, q: o.quaternion.clone()}));
+  // as hélices: no modelo o lado direito do drone é o esquerdo espelhado e as pás dos dois lados ficaram presas aos
+  // mesmos ossos, então girar os ossos torce as pás da direita. Aqui as pás de cada um dos quatro rotores saem da malha
+  // como peças próprias (na pose de descanso, já deformada), centradas no cubo do rotor, e giram ali; dois rotores no
+  // sentido horário e dois no anti-horário, em diagonal. Um disco translúcido marca a hélice girando.
   const rotors = [];
   {
     drone.updateMatrixWorld(true);
     const inv = drone.matrixWorld.clone().invert();
-    const centers = props.map((p) => p.b.getWorldPosition(new V3()).applyMatrix4(inv));
-    // um por osso e o espelhado do outro lado (o lado direito vem do espelhamento da malha)
-    const pts = [];
-    for (const c of centers) pts.push(c, new V3(-c.x, c.y, c.z));
-    const uniq = pts.filter((p, i) => pts.findIndex((q) => q.distanceTo(p) < 0.05) === i);
+    let skin = null;
+    drone.traverse((o) => o.isSkinnedMesh && !skin && o.geometry.attributes.position.count > 1000 && (skin = o));
+    const geo = skin.geometry;
+    const pos = geo.attributes.position;
+    const nrm = geo.attributes.normal;
+    const uv = geo.attributes.uv;
+    const si = geo.attributes.skinIndex;
+    const sw = geo.attributes.skinWeight;
+    const bones = skin.skeleton.bones;
+    const toDrone = inv.clone().multiply(skin.matrixWorld);
+    const nm = new THREE.Matrix3().getNormalMatrix(toDrone);
+    const P = [];
+    const key = new Array(pos.count);
+    const hubSum = {};
+    const v = new V3();
+    for (let i = 0; i < pos.count; i++) {
+      let best = 0;
+      let bw = -1;
+      for (let c = 0; c < 4; c++) if (sw.getComponent(i, c) > bw) {
+        bw = sw.getComponent(i, c);
+        best = si.getComponent(i, c);
+      }
+      v.fromBufferAttribute(pos, i);
+      skin.applyBoneTransform(i, v);
+      v.applyMatrix4(toDrone);
+      P.push(v.clone());
+      const name = bones[best].name;
+      const rotor = /propel|sraig|saig/i.test(name);
+      if (!rotor) continue;
+      const k = (/back/i.test(name) ? 'B' : 'F') + (v.x > 0 ? '+' : '-');
+      key[i] = k;
+      if (/sraig|saig/i.test(name)) {
+        const h = (hubSum[k] ??= {s: new V3(), n: 0, top: -1e9});
+        h.s.add(v);
+        h.n++;
+        h.top = Math.max(h.top, v.y);
+      }
+    }
+    const idx = geo.index ? geo.index.array : [...Array(pos.count).keys()];
+    const keepIdx = [];
+    const tris = {};
+    for (let t = 0; t < idx.length; t += 3) {
+      const a0 = idx[t];
+      const k = key[a0];
+      if (k && key[idx[t + 1]] === k && key[idx[t + 2]] === k) (tris[k] ??= []).push(idx[t], idx[t + 1], idx[t + 2]);
+      else keepIdx.push(idx[t], idx[t + 1], idx[t + 2]);
+    }
+    const kept = geo.clone();
+    kept.setIndex(keepIdx);
+    skin.geometry = kept;
     const discMat = new THREE.MeshBasicMaterial({color: '#1b1f27', transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide});
-    for (const p of uniq) {
-      const d = new THREE.Mesh(new THREE.CircleGeometry(0.12, 32), discMat);
-      d.rotation.x = -Math.PI / 2;
-      d.position.copy(p).add(new V3(0, 0.012, 0));
-      d.renderOrder = 4;
-      drone.add(d);
-      rotors.push(d);
+    const mats = Array.isArray(skin.material) ? skin.material : [skin.material];
+    for (const [k, list] of Object.entries(tris)) {
+      const h = hubSum[k];
+      const hub = h.s.multiplyScalar(1 / h.n);
+      const n = list.length;
+      const ps = new Float32Array(n * 3);
+      const ns = new Float32Array(n * 3);
+      const us = uv ? new Float32Array(n * 2) : null;
+      let r = 0;
+      const nv = new V3();
+      list.forEach((i, j) => {
+        const q = P[i];
+        ps.set([q.x - hub.x, q.y - hub.y, q.z - hub.z], j * 3);
+        r = Math.max(r, Math.hypot(q.x - hub.x, q.z - hub.z));
+        nv.fromBufferAttribute(nrm, i).applyMatrix3(nm).normalize();
+        ns.set([nv.x, nv.y, nv.z], j * 3);
+        if (us) us.set([uv.getX(i), uv.getY(i)], j * 2);
+      });
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(ps, 3));
+      g.setAttribute('normal', new THREE.BufferAttribute(ns, 3));
+      if (us) g.setAttribute('uv', new THREE.BufferAttribute(us, 2));
+      const m = new THREE.Mesh(g, mats[0]);
+      m.castShadow = true;
+      const piv = new THREE.Group();
+      piv.position.copy(hub);
+      piv.add(m);
+      const disc = new THREE.Mesh(new THREE.CircleGeometry(r, 40), discMat);
+      disc.rotation.x = -Math.PI / 2;
+      disc.position.y = h.top - hub.y + 0.004;
+      disc.renderOrder = 4;
+      piv.add(disc);
+      drone.add(piv);
+      // diagonais giram para o mesmo lado: frente-esquerda com trás-direita
+      const dir = (k[0] === 'F') === (k[1] === '+') ? 1 : -1;
+      rotors.push({piv, dir});
     }
     rotors.mat = discMat;
   }
@@ -209,9 +284,10 @@ export async function buildRig() {
     const d = s.drone;
     drone.position.set(d.x, d.y + explode * 0.7 * (d.y < SPEC.pad + 0.05 ? 1 : 0), d.z);
     drone.rotation.set(Math.min(0.22, (s.flight.speed ?? 0) * 0.02), d.heading * D2R, 0, 'YXZ');
-    const spinA = (s.tau * 70) % (Math.PI * 2);
-    for (const p of props) p.b.quaternion.copy(p.q).multiply(tq.setFromAxisAngle(new V3(0, 1, 0), d.spin * spinA));
-    rotors.mat.opacity = 0.32 * d.spin;
+    // as hélices aceleram com o spin: o ângulo é a integral de uma rotação que cresce até ~11 voltas por segundo
+    const ang = s.tau * 70 * d.spin;
+    for (const r of rotors) r.piv.rotation.y = r.dir * ang;
+    rotors.mat.opacity = 0.28 * Math.max(0, d.spin - 0.25) / 0.75;
     // as domes: pan em torno do eixo vertical, tilt para baixo
     domes.forEach((dm, k) => {
       const a = s.domes[k];
