@@ -4,6 +4,7 @@
 // com o ponteiro do operador; um clique, arraste, roda ou tecla devolve o controle, 25 s sem mexer retoma o passeio.
 import {warmComposer} from 'teardown-kit/warm.js';
 import {createConsole, DISPLAY, FEED, SEQS, VIEWS} from './console.js';
+import {createMobileConsole} from './consoleMobile.js';
 import {absView, BLEND, camAt, displayAt, DURATION, isNear, makeConsoleFrame, makeCursor, mechAt, seqAt, ss, viewAt, VIEW_FN} from './film.js';
 import {SEQ} from './kin.js';
 import {createXptoStage} from './stage.js';
@@ -55,11 +56,11 @@ export async function runLive() {
   app.appendChild(canvas);
   // celular (tela estreita, ou de toque e baixa): o console em abas embaixo da cena; computador: o console 1600 x 900
   // pelo tamanho da tela do aparelho (não muda com o zoom do navegador): o lado menor abaixo de 600 px é celular
-  // a versão de celular vem numa próxima etapa: por enquanto o console de mesa em todas as telas
-  const mobile = false;
+  // pelo tamanho da tela do aparelho (não muda com o zoom do navegador): o lado menor abaixo de 600 px é celular
+  const mobile = Math.min(screen.width, screen.height) < 600 || innerWidth <= 820;
   await document.fonts.ready;
   const st = await createXptoStage({canvas});
-  const ui = createConsole(app);
+  const ui = mobile ? createMobileConsole(app, canvas) : createConsole(app);
   const tourCursor = mobile ? () => ({x: -99, y: -99, press: false, ring: 0, ringX: 0, ringY: 0}) : makeCursor(ui);
   const frameConsole = makeConsoleFrame(ui, st);
 
@@ -361,14 +362,16 @@ export async function runLive() {
       cursor = {x: -99, y: -99, press: false, ring: rk, ringX: ring.x, ringY: ring.y};
     }
     if (mobile) {
-      tgt = {...tgt, d: tgt.d * mob.k * (isNear(view) ? 1.6 : 1), sy: (tgt.sy ?? 0) * 0.5 - mob.strip / 2, sx: 0};
+      // no celular as vistas de perto e a vista do alvo recuam, para o totem e o drone caberem na tela estreita
+      const far = isNear(view) ? 1.6 : view === 'alvo' ? 1.35 : view === 'rua' ? 1.15 : 1;
+      tgt = {...tgt, d: tgt.d * mob.k * far, tx: view === 'alvo' ? tgt.tx * 0.6 : tgt.tx, sy: (tgt.sy ?? 0) * 0.5 - mob.strip / 2, sx: 0};
     }
     const {m, panRate} = mechAt(seq, tau);
     const k = 1 - Math.exp(-dt / (AP.on ? 0.25 : 0.5));
     cam.az += wrap(tgt.az - cam.az) * k;
     for (const key of ['tx', 'ty', 'tz', 'el', 'd', 'sx', 'sy', 'head']) cam[key] += (tgt[key] - cam[key]) * k;
     const night = eased('night', 0.9);
-    const feeds = {dome: FEED.dome, drone: FEED.drone};
+    const feeds = mobile ? {dome: ui.feeds.dome, drone: ui.feeds.drone} : {dome: FEED.dome, drone: FEED.drone};
     const out = st.frame(m, {...cam, az: cam.az * D2R, el: cam.el * D2R}, {explode: eased('exploded', 0.8), cover: eased('cover'), night, feeds});
     const display = Object.fromEntries(DISPLAY.map((x) => [x, disp[x].on]));
     frameConsole({seq, tau, m, panRate, view, display, night, near: isNear(view), labels: eased('labels', 0.6) * ss(BLEND * 0.5, BLEND * 0.5 + 0.6, since), cursor, personBox: out.personBox, droneBox: out.droneBox, tour: AP.on, since, paused: AP.on ? false : paused, speed: AP.on ? 1 : speed, speedK: speedK(AP.on ? 1 : speed)});

@@ -209,7 +209,7 @@ export function makeLabels(st, area = DESK_AREA) {
 
 // nas cenas de apresentação do passeio a legenda fala do que a câmera mostra; no resto, do que o Shomer está fazendo
 const SHOW = {
-  cameras: 'Uma câmera dome em cada face: quatro câmeras, vigilância de 360°.',
+  cameras: 'Uma câmera dome em cada face: vigilância de 360°.',
 };
 function captionFor(s) {
   if (s.tour && SHOW[s.view] && s.since !== undefined && s.seq === 'patrol') return {caption: SHOW[s.view], captionAge: s.since - BLEND * 0.6};

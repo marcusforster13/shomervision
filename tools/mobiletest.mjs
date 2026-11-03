@@ -19,7 +19,7 @@ for (const [name, w, h] of [['pe', 390, 844], ['deitado', 844, 390]]) {
   // rola até as abas, abre a de LPR e a de controles
   await p.evaluate(() => window.scrollTo(0, document.querySelector('.mx-tabs').offsetTop - 60));
   await p.waitForTimeout(400);
-  await p.getByRole('button', {name: 'LPR', exact: true}).tap();
+  await p.getByRole('button', {name: 'DRONE', exact: true}).tap();
   await p.waitForTimeout(400);
   await p.screenshot({path: `teardown-out/cel-${name}-2.png`});
   await p.getByRole('button', {name: 'CONTROLES', exact: true}).tap();
